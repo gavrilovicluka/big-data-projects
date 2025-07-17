@@ -1,5 +1,6 @@
 # Ignore large CSV file
 *.csv
+data/
 
 .idea/
 
