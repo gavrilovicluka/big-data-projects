@@ -1,11 +1,19 @@
+import argparse
 import os
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, from_json, window
 from pyspark.sql.types import *
-from pyspark import SparkConf
-from pyspark.sql.functions import mean, min, max, col, count, round
-from pyspark.sql.functions import concat, to_timestamp, lit
-import sys
+from pyspark.sql.functions import mean, min, max, col, stddev, to_json, struct, round
+
+APP_NAME = "FlightDelaysStreaming"
+WINDOW_UNIT = "seconds"
+
+# -------------------------------
+# ENV variables
+# -------------------------------
+KAFKA_HOST = os.getenv("KAFKA_HOST", "kafka:9092")
+INPUT_TOPIC = os.getenv("INPUT_TOPIC", "flights_topic")
+OUTPUT_TOPIC = os.getenv("OUTPUT_TOPIC", "statistics_topic")
 
 
 def is_float(num):
@@ -16,171 +24,182 @@ def is_float(num):
         return False
 
 
-def initialize_spark_session():
-    conf = SparkConf()
-    conf.setMaster("spark://spark-master:7077")
-    conf.set("spark.cassandra.connection.host", "cassandra")
-    conf.set("spark.cassandra.connection.port", "9042")
-    spark = SparkSession.builder.config(conf=conf).appName("Projekat2").getOrCreate()
+# -------------------------------
+# Application arguments
+# -------------------------------
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--window_duration", type=int, required=True, help='Window duration in seconds')
+    parser.add_argument("--window_type", required=True, choices=["tumbling", "sliding"])
+    parser.add_argument("--slide_duration", default=None)
+    
+    parser.add_argument("--filter", action="append", default=[])
+    parser.add_argument("--stats_col", required=True)
+    parser.add_argument("--group_by", required=True, help="Group by column, e.g., CARRIER_NAME or DEPARTING_AIRPORT")
+
+    return parser.parse_args()
+
+
+# -------------------------------
+# Spark session
+# -------------------------------
+def initialize_spark():
+    spark = SparkSession.builder \
+        .appName(APP_NAME) \
+        .config("spark.cassandra.connection.host", "cassandra") \
+        .config("spark.cassandra.connection.port", "9042") \
+        .getOrCreate()
     spark.sparkContext.setLogLevel("ERROR")
+
+    print("[consumer] Spark session initialized.")
     return spark
 
 
-def parse_kafka_values(spark):
-    data_frame = (
-        spark.readStream.format("kafka")
-        .option("kafka.bootstrap.servers", "kafka:9092")
-        .option("subscribe", "vehicles_topic")
-        .option("startingOffsets", "latest")
+# -------------------------------
+# Dataset schema
+# -------------------------------
+def get_schema():
+    return StructType([
+        StructField("MONTH", IntegerType()),
+        StructField("DAY_OF_WEEK", IntegerType()),
+        StructField("DEP_DEL15", IntegerType()),
+        StructField("DISTANCE_GROUP", IntegerType()),
+        StructField("DEP_BLOCK", StringType()),
+        StructField("SEGMENT_NUMBER", IntegerType()),
+        StructField("CONCURRENT_FLIGHTS", IntegerType()),
+        StructField("NUMBER_OF_SEATS", IntegerType()),
+        StructField("CARRIER_NAME", StringType()),
+        StructField("AIRPORT_FLIGHTS_MONTH", IntegerType()),
+        StructField("AIRLINE_FLIGHTS_MONTH", IntegerType()),
+        StructField("AIRLINE_AIRPORT_FLIGHTS_MONTH", IntegerType()),
+        StructField("AVG_MONTHLY_PASS_AIRPORT", IntegerType()),
+        StructField("AVG_MONTHLY_PASS_AIRLINE", IntegerType()),
+        StructField("FLT_ATTENDANTS_PER_PASS", FloatType()),
+        StructField("GROUND_SERV_PER_PASS", FloatType()),
+        StructField("PLANE_AGE", IntegerType()),
+        StructField("DEPARTING_AIRPORT", StringType()),
+        StructField("LATITUDE", FloatType()),
+        StructField("LONGITUDE", FloatType()),
+        StructField("PREVIOUS_AIRPORT", StringType()),
+        StructField("PRCP", FloatType()),
+        StructField("SNOW", FloatType()),
+        StructField("SNWD", FloatType()),
+        StructField("TMAX", IntegerType()),
+        StructField("AWND", IntegerType()),
+        StructField("timestamp", TimestampType())
+    ])
+
+
+# -------------------------------
+# Read Kafka stream
+# -------------------------------
+def parse_kafka_stream(spark):
+    print(f"[consumer] Connecting to Kafka topic {INPUT_TOPIC}...")
+    raw = spark.readStream \
+        .format("kafka") \
+        .option("kafka.bootstrap.servers", KAFKA_HOST) \
+        .option("subscribe", INPUT_TOPIC) \
+        .option("startingOffsets", "latest") \
         .load()
-        # .option("kafka.bootstrap.servers", os.environ["KAFKA_HOST"])
-        # # .option("kafka.bootstrap.servers", "kafka:9092")
-        # .option("subscribe", os.environ["KAFKA_TOPIC"])
-        # # .option("subscribe", "bikes-spark")
-        # .option("startingOffsets", "latest")
-        # .option("groupIdPrefix", os.environ["KAFKA_CONSUMER_GROUP"])
-        # # .option("groupIdPrefix", "Spark-Group")
-    )
+    
+    schema = get_schema()
 
-    schema = StructType(
-        [
-            StructField("latitude", StringType()),
-            StructField("longitude", StringType()),
-            StructField("speed_kmh", StringType()),
-            StructField("id", StringType()),
-            StructField("timestamp", StringType()),
-            StructField("acceleration", StringType()),
-            StructField("type", StringType()),
-            StructField("distance", StringType()),
-            StructField("odometer", StringType()),
-            StructField("pos", StringType()),
-        ]
-    )
+    # Parse message from JSON into Spark DataFrame
+    df = raw.select("timestamp", from_json(col("value").cast("string"), schema).alias("data")).select("data.*")
 
-    parsed_values = data_frame.select(
-        "timestamp", from_json(col("value").cast("string"), schema).alias("parsed_values")
-    )
-
-    df_org = parsed_values.selectExpr(
-        "timestamp",
-        "parsed_values.latitude AS latitude",
-        "parsed_values.longitude AS longitude",
-        "parsed_values.speed_kmh AS speed_kmh",
-        "parsed_values.id AS id",
-        "parsed_values.acceleration AS acceleration",
-        "parsed_values.type AS type",
-        "parsed_values.distance AS distance",
-        "parsed_values.odometer AS odometer",
-        "parsed_values.pos AS pos",
-    )
-
-    df_org = df_org.withColumn("pos", col("pos").cast("double"))
-    df_org = df_org.withColumn("latitude", col("latitude").cast("double"))
-    df_org = df_org.withColumn("longitude", col("longitude").cast("double"))
-    df_org = df_org.filter(df_org.speed_kmh <= 120)
-
-    return df_org
+    print("[consumer] Kafka stream parsed.")
+    return df
 
 
-def calculate_statistics(df, long1=None, long2=None, lat1=None, lat2=None):
-    if long1 is not None and long2 is not None and lat1 is not None and lat2 is not None:
-        df_ret = df.where(
-            (df.longitude < long1)
-            & (df.longitude > long2)
-            & (df.latitude < lat1)
-            & (df.latitude > lat2)
-        ).groupBy(window(df.timestamp, "10 seconds", "10 seconds")).agg(
-            mean(df.speed_kmh).alias("mean_speed"),
-            min(df.speed_kmh).alias("min_speed"),
-            max(df.speed_kmh).alias("max_speed"),
-            count(df.speed_kmh).alias("count_speed"),
-        )
-        return df_ret
+# -------------------------------
+# Filters
+# -------------------------------
+def apply_filters(df, filters):
+    for f in filters:
+        df = df.filter(f)  # npr. "DEP_DELAY>10"
+    return df
+
+
+# -------------------------------
+# Statistics
+# -------------------------------
+def compute_statistics(df, args):
+    
+
+    if args.window_type == "tumbling":
+        slide = args.window_duration
     else:
-        return None
+        slide = args.slide_duration or args.window_duration
 
+    window_duration_str = f"{args.window_duration} {WINDOW_UNIT}"
+    slide_duration_str = f"{slide} {WINDOW_UNIT}"
 
-def find_top_n_locations(df, N=5, num_decimal_places=3):
-    df_rounded_locations = df.select(
-        round("latitude", num_decimal_places).alias("latitude"),
-        round("longitude", num_decimal_places).alias("longitude"),
+    stats_df = df.groupBy(
+        window(col("timestamp"), window_duration_str, slide_duration_str),
+        col(args.group_by)
+    ).agg(
+        round(min(args.stats_col), 2).alias("min_value"),
+        round(max(args.stats_col), 2).alias("max_value"),
+        round(mean(args.stats_col), 2).alias("avg_value"),
+        round(stddev(args.stats_col), 2).alias("std_value")
     )
 
-    df_with_window = df_rounded_locations.groupBy(
-        window(df.timestamp, "10 seconds", "10 seconds"), "latitude", "longitude"
-    ).agg(count("latitude").alias("freq"))
-
-    top_n_locations = df_with_window.orderBy("freq", ascending=False).limit(N)
-    return top_n_locations
+    return stats_df
 
 
-def write_statistics_to_cassandra(writeDF, _):
-    writeDF.write \
-        .format("org.apache.spark.sql.cassandra") \
-        .mode('append') \
-        .options(table="statistika", keyspace="locationsdb") \
-        .save()
-    writeDF.show()
+# -------------------------------
+# Send data to Kafka output topic
+# -------------------------------
+def write_to_kafka(df):
+    print(f"[consumer] Writing statistics to Kafka topic {OUTPUT_TOPIC}...")
 
-
-def write_top_n_locations_to_cassandra(writeDF, _):
-    writeDF.write \
-        .format("org.apache.spark.sql.cassandra") \
-        .mode('append') \
-        .options(table="top_locations", keyspace="locationsdb") \
-        .save()
-    writeDF.show()
-
-
-def execution(df):
-    long1, long2, lat1, lat2 = float(sys.argv[1]), float(sys.argv[2]), float(sys.argv[3]), float(sys.argv[4])
-
-    print("Statističke vrednosti za slučaj kada su prosleđene samo širina i dužina")
-    df_statistics = calculate_statistics(df, long1=long1, long2=long2, lat1=lat1, lat2=lat2)
-    df_statistics_cassandra = df_statistics.selectExpr(
-        "window.start as start",
-        "window.end as end",
-        "mean_speed",
-        "min_speed",
-        "max_speed",
-        "count_speed"
+    # DataFrame: window.start | window.end | group | min_value | max_value | avg_value | std_value
+    final_df = df.select(
+        to_json(
+            struct(
+                col("window.start").alias("window_start"),
+                col("window.end").alias("window_end"),
+                col(df.columns[1]).alias("group"),
+                struct(
+                    "min_value",
+                    "max_value",
+                    "avg_value",
+                    "std_value"
+                ).alias("statistics")
+            )
+        ).alias("value")
     )
 
-    print("Pronalazak top N lokacija")
-    df_top_n_locations = find_top_n_locations(df)
-    df_top_n_locations_cassandra = df_top_n_locations.selectExpr(
-        "window.start as start",
-        "window.end as end",
-        "latitude",
-        "longitude",
-        "freq"
-    )
+    final_df.writeStream \
+        .format("kafka") \
+        .option("kafka.bootstrap.servers", KAFKA_HOST) \
+        .option("topic", OUTPUT_TOPIC) \
+        .option("checkpointLocation", "/tmp/spark_checkpoints") \
+        .outputMode("update") \
+        .start() \
+        .awaitTermination()
+    
 
-    query1 = (df_statistics_cassandra.writeStream
-              .foreachBatch(write_statistics_to_cassandra)
-              .outputMode("update")
-              .start())
-    query2 = (df_top_n_locations_cassandra.writeStream
-              .foreachBatch(write_top_n_locations_to_cassandra)
-              .outputMode("complete")
-              .start())
-    query1.awaitTermination()
-    query2.awaitTermination()
-
-
+# -------------------------------
+# Main
+# -------------------------------
 if __name__ == '__main__':
-    num_arguments = len(sys.argv)
-    if num_arguments < 2:
-        print("Usage: main.py <input folder> ")
-        exit(-1)
-    elif num_arguments != 5:
-        print("Invalid number of arguments")
-        exit(-1)
-    else:
-        if all(is_float(sys.argv[i]) for i in range(1, 5)):
-            df_spark = initialize_spark_session()
-            dataframe = parse_kafka_values(df_spark)
-            execution(dataframe)
-        else:
-            print("Invalid arguments")
-            exit(-1)
+    args = parse_args()
+    print(f"[consumer] Started with arguments: {args}")
+    
+    spark = initialize_spark()
+    df_stream = parse_kafka_stream(spark)
+
+    df_filtered = apply_filters(df_stream, args.filter)
+    df_stats = compute_statistics(df_filtered, args)
+
+    write_to_kafka(df_stats)
+
+
+# spark-submit spark_consumer.py \
+#     --window_duration 60 \
+#     --window_type tumbling \
+#     --group_by DEPARTING_AIRPORT \
+#     --stats_col PLANE_AGE \
+#     --filter "CARRIER_NAME=='Delta'" \
+#     --filter "DEP_DEL15==1"

@@ -7,6 +7,7 @@ networks:
 services:
   kafka:
     image: wurstmeister/kafka:2.13-2.8.1
+    container_name: project2-kafka
     depends_on:
       - zookeeper
     ports:
@@ -26,6 +27,7 @@ services:
 
   zookeeper:
     image: wurstmeister/zookeeper:latest
+    container_name: project2-zookeeper
     ports:
       - "2181:2181"
     networks:
@@ -35,25 +37,31 @@ services:
     build:
       context: .
       dockerfile: producer/Dockerfile
+    container_name: project2-producer
     depends_on:
       - kafka
     environment:
-      PRODUCER_SCRIPT: producer/producer.py
-      DATA: ../Project1/data/full_data_flightdelay.csv
+      PRODUCER_SCRIPT: producer.py
+      DATA: /data/full_data_flightdelay.csv
       KAFKA_HOST: kafka:9092
       KAFKA_TOPIC: flights_topic
       KAFKA_INTERVAL: 1
+    volumes:
+      - ./data:/data
     networks:
       - bde
 
   cassandra:
     image: cassandra:latest
+    container_name: project2-cassandra
     ports:
       - 9042:9042
-    volumes:
-      - ~/apps/cassandra:/var/lib/cassandra
+    tmpfs:
+      - /var/lib/cassandra
+    # volumes:
+    #   - ~/apps/cassandra:/var/lib/cassandra
     environment:
-      - CASSANDRA_CLUSTER_NAME=cloudinfra
+      - CASSANDRA_CLUSTER_NAME=cassandra-cluster
     networks:
       - bde
 
@@ -97,3 +105,37 @@ services:
       - SPARK_WORKER_WEBUI_PORT=8071
     networks:
       - bde
+
+  consumer:
+    build:
+      context: .
+      dockerfile: spark-streaming-consumer/Dockerfile
+    container_name: project2-consumer
+    depends_on:
+      - kafka
+      - spark-master
+      - cassandra
+    environment:
+      KAFKA_HOST: kafka:9092
+      INPUT_TOPIC: flights_topic
+      OUTPUT_TOPIC: statistics_topic
+      SPARK_APPLICATION_ARGS: "--window_duration 30 --window_type tumbling --stats_col PLANE_AGE --group_by CARRIER_NAME"
+    networks:
+      - bde
+
+  cassandra-writer:
+    build:
+      context: .
+      dockerfile: cassandra-writer/Dockerfile
+    container_name: project2-cassandra-writer
+    environment:
+      KAFKA_HOST: kafka:9092
+      OUTPUT_TOPIC: statistics_topic
+      CASSANDRA_HOST: cassandra
+      KEYSPACE: flights
+      TABLE: statistics
+    networks:
+      - bde
+    depends_on:
+      - kafka
+      - cassandra
