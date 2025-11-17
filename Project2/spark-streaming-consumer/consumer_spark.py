@@ -3,7 +3,7 @@ import os
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, from_json, window
 from pyspark.sql.types import *
-from pyspark.sql.functions import mean, min, max, col, stddev, to_json, struct, round
+from pyspark.sql.functions import mean, min, max, col, stddev, to_json, struct, round, count, expr
 
 APP_NAME = "FlightDelaysStreaming"
 WINDOW_UNIT = "seconds"
@@ -31,11 +31,11 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--window_duration", type=int, required=True, help='Window duration in seconds')
     parser.add_argument("--window_type", required=True, choices=["tumbling", "sliding"])
-    parser.add_argument("--slide_duration", default=None)
+    parser.add_argument("--slide_duration", default=None, help="Slide duration for sliding window")
     
-    parser.add_argument("--filter", action="append", default=[])
-    parser.add_argument("--stats_col", required=True)
     parser.add_argument("--group_by", required=True, help="Group by column, e.g., CARRIER_NAME or DEPARTING_AIRPORT")
+    parser.add_argument("--filter", action="append", default=[])
+    parser.add_argument("--target_col", default="DEP_DEL15", help="Target metric column, e.g., DEP_DEL15")
 
     return parser.parse_args()
 
@@ -116,7 +116,7 @@ def parse_kafka_stream(spark):
 # -------------------------------
 def apply_filters(df, filters):
     for f in filters:
-        df = df.filter(f)  # npr. "DEP_DELAY>10"
+        df = df.filter(expr(f))  # e.g. "PRCP>0"
     return df
 
 
@@ -124,8 +124,6 @@ def apply_filters(df, filters):
 # Statistics
 # -------------------------------
 def compute_statistics(df, args):
-    
-
     if args.window_type == "tumbling":
         slide = args.window_duration
     else:
@@ -138,10 +136,11 @@ def compute_statistics(df, args):
         window(col("timestamp"), window_duration_str, slide_duration_str),
         col(args.group_by)
     ).agg(
-        round(min(args.stats_col), 2).alias("min_value"),
-        round(max(args.stats_col), 2).alias("max_value"),
-        round(mean(args.stats_col), 2).alias("avg_value"),
-        round(stddev(args.stats_col), 2).alias("std_value")
+        round(min(args.target_col), 2).alias("min_value"),
+        round(max(args.target_col), 2).alias("max_value"),
+        round(mean(args.target_col), 2).alias("avg_value"),
+        round(stddev(args.target_col), 2).alias("std_value"),
+        count(args.target_col).alias("count")
     )
 
     return stats_df
@@ -151,9 +150,7 @@ def compute_statistics(df, args):
 # Send data to Kafka output topic
 # -------------------------------
 def write_to_kafka(df):
-    print(f"[consumer] Writing statistics to Kafka topic {OUTPUT_TOPIC}...")
-
-    # DataFrame: window.start | window.end | group | min_value | max_value | avg_value | std_value
+    # DataFrame: window.start | window.end | group | min_value | max_value | avg_value | std_value | count
     final_df = df.select(
         to_json(
             struct(
@@ -164,11 +161,15 @@ def write_to_kafka(df):
                     "min_value",
                     "max_value",
                     "avg_value",
-                    "std_value"
+                    "std_value",
+                    "count"
                 ).alias("statistics")
             )
         ).alias("value")
     )
+
+    print(f"[consumer] Writing statistics to Kafka topic {OUTPUT_TOPIC}...")
+    print(f"[consumer] DataFrame: ", final_df)
 
     final_df.writeStream \
         .format("kafka") \
@@ -200,6 +201,6 @@ if __name__ == '__main__':
 #     --window_duration 60 \
 #     --window_type tumbling \
 #     --group_by DEPARTING_AIRPORT \
-#     --stats_col PLANE_AGE \
+#     --target_col PLANE_AGE \
 #     --filter "CARRIER_NAME=='Delta'" \
 #     --filter "DEP_DEL15==1"

@@ -119,7 +119,11 @@ services:
       KAFKA_HOST: kafka:9092
       INPUT_TOPIC: flights_topic
       OUTPUT_TOPIC: statistics_topic
-      SPARK_APPLICATION_ARGS: "--window_duration 30 --window_type tumbling --stats_col PLANE_AGE --group_by CARRIER_NAME"
+      SPARK_APPLICATION_ARGS: > 
+        --window_duration 30 
+        --window_type tumbling 
+        --group_by DEP_DEL15
+        --target_col CONCURRENT_FLIGHTS 
     networks:
       - bde
 

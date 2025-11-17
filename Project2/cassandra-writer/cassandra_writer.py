@@ -76,6 +76,7 @@ session.execute(f"""
         max_value float,
         avg_value float,
         std_value float,
+        count float,
         PRIMARY KEY (window_start, group_value)
     )
 """)
@@ -101,18 +102,20 @@ for msg in consumer:
             min_value, 
             max_value,
             avg_value, 
-            std_value
+            std_value,
+            count
         )
-        VALUES (%s,%s,%s,%s,%s,%s,%s)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
         """,
         (
             record.get("window_start"),
             record.get("window_end"),
-            record.get("group"),
+            str(record.get("group")),
             stats.get("min_value"),
             stats.get("max_value"),
             stats.get("avg_value"),
-            stats.get("std_value")
+            stats.get("std_value"),
+            stats.get("count")
         )
     )
 
