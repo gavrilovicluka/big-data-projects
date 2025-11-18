@@ -49,6 +49,9 @@ def initialize_spark():
     return spark
 
 
+# -------------------------------
+# Loading data from file
+# -------------------------------
 def load_data(spark):
     print(f"Loading data from: {DATA_PATH}...")
     df = spark.read.csv(DATA_PATH, header=True, inferSchema=True)
