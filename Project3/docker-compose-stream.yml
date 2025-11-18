@@ -1,0 +1,27 @@
+version: "3.9"
+
+networks:
+  bde:
+    external: true
+
+services:
+  spark-streaming:
+    build:
+      context: ./spark-streaming
+      dockerfile: Dockerfile
+    image: spark-streaming:latest
+    container_name: spark-streaming
+    environment:
+      SPARK_APPLICATION_PYTHON_LOCATION: /app/spark_streaming.py
+      SPARK_MASTER: spark://spark-master:7077
+      SPARK_APPLICATION_ARGS: "--window_duration 30 --window_type sliding --slide_duration 5"
+      SPARK_SUBMIT_ARGS: "--packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.1.2"
+      KAFKA_HOST: kafka:9092
+      INPUT_TOPIC: flights_topic
+      MODEL_PATH: /model/lr_pipeline_model
+      OUTPUT_DIR: /output/predictions
+    volumes:
+      - ./model:/model
+      - ./output:/output
+    networks:
+      - bde

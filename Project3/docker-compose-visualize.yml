@@ -1,0 +1,20 @@
+version: "3.9"
+
+networks:
+  bde:
+    external: true
+
+
+services:
+  visualizer:
+    build:
+      context: ./visualization
+      dockerfile: Dockerfile
+    image: jupyter/base-notebook
+    container_name: flight-visualizer
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./output:/output
+    networks:
+      - bde
