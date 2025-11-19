@@ -1,0 +1,3 @@
+# Apache Spark & HDFS
+
+This project represents implementation of an application for the processing and analysis of a large set of flight delay data using the **Apache Spark** framework and **PySpark** (Python API). The goal of the project is to set up a cluster environment (Spark, Hadoop HDFS, Docker) and develop an application that performs flight delay analysis based on various attributes, including flight conditions, airline, airport and weather.

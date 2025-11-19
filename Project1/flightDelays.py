@@ -46,15 +46,6 @@ def analyze(df, args):
         if stats_by_group:
             print_separator(f"{args.stats_col} statistics by {args.group_by_col}")
             stats_by_group.show(10, truncate=False)
-    # stats_plane_age_by_carrier = calculate_statistics_by_group(df, "CARRIER_NAME", "PLANE_AGE")
-    # if stats_plane_age_by_carrier:
-    #     print_separator("Airplane age statistics by airline")
-    #     stats_plane_age_by_carrier.show(10, truncate=False)
-
-    # stats_seats_by_airport = calculate_statistics_by_group(df, "DEPARTING_AIRPORT", "NUMBER_OF_SEATS")
-    # if stats_seats_by_airport:
-    #     print_separator("Seat number statistics by departure airport")
-    #     stats_seats_by_airport.show(10, truncate=False)
 
     print_separator("Airport average monthly pass")
     df.select(
